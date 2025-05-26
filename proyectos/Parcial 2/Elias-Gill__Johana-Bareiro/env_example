@@ -1,0 +1,8 @@
+# OBLIGATORIO: la private key de tu billetera
+PRIVATE_KEY=your_private_key
+
+# cambiar si es que se utiliza otro contrato
+VITE_CONTRACT_ADDRESS=0x89745255d8a58245bCd583b41fc463678Edc9701
+EPHEMERY_RPC_URL=https://rpc.ephemery.deu
+# cambiar si es que se cambia el storage de nfts
+IPFS_CODE=bafybeihnk5b4l6rfjpxlod4lxjxwddlqa5pzmolwwzkqyo7fxpb7ub4buu
