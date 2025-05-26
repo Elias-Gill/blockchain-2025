@@ -15,6 +15,14 @@
 ```bash
 mv env_example .env
 cp .env web_app/
+
+Luego de ello se debe añadir la red testnet para las pruebas con la billetera en metamask:
+```txt
+Nombre de red: "ephemery-testnet"
+URL de red: "https://otter.bordel.wtf/erigon"
+Identificador de cadena: 39438146
+Simbolo de moneda: "ETH"
+Direccion de explorador: "https://explorer.ephemery.dev"
 ```
 
 ### Opciones de ejecución
