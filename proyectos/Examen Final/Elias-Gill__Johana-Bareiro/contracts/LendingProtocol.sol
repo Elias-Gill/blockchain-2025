@@ -3,166 +3,118 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-// Token para el colateral (ej. cUSD)
-contract CollateralToken is ERC20, Ownable {
-    constructor() ERC20("CollateralToken", "cUSD") {}
-
-    function mint(address to, uint256 amount) public onlyOwner {
-        _mint(to, amount);
-    }
-}
-
-// Token para el préstamo (ej. dDAI)
-contract LoanToken is ERC20, Ownable {
-    constructor() ERC20("LoanToken", "dDAI") {}
-
-    function mint(address to, uint256 amount) public onlyOwner {
-        _mint(to, amount);
-    }
-}
-
-contract LendingProtocol {
-    // Tokens
-    CollateralToken public collateralToken;
-    LoanToken public loanToken;
+contract LendingProtocol is Ownable, ReentrancyGuard {
+    ERC20 public immutable collateralToken;
+    ERC20 public immutable loanToken;
     
-    // Configuración de intereses
-    uint256 public constant INTEREST_RATE = 5; // 5% semanal
-    uint256 public constant MAX_LOAN_TO_VALUE = 66; // 66% del colateral
+    uint256 public constant INTEREST_RATE = 5; // 5%
+    uint256 public constant COLLATERAL_RATIO = 150; // 150%
+    uint256 public constant INTEREST_PERIOD = 1 weeks;
     
-    // Datos del usuario
     struct UserData {
         uint256 collateralBalance;
         uint256 loanBalance;
         uint256 interestAccrued;
-        uint256 lastInteractionBlock;
+        uint256 lastInteractionTime;
     }
     
     mapping(address => UserData) public users;
     
-    // Eventos
     event CollateralDeposited(address indexed user, uint256 amount);
     event LoanTaken(address indexed user, uint256 amount);
     event LoanRepaid(address indexed user, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
     
-    constructor(address _collateralToken, address _loanToken) {
-        collateralToken = CollateralToken(_collateralToken);
-        loanToken = LoanToken(_loanToken);
+    constructor(address _collateralToken, address _loanToken) Ownable(msg.sender) {
+        require(_collateralToken != address(0) && _loanToken != address(0), "Invalid token address");
+        collateralToken = ERC20(_collateralToken);
+        loanToken = ERC20(_loanToken);
     }
     
-    // Función para depositar colateral
-    function depositCollateral(uint256 amount) external {
-        require(amount > 0, "Amount must be greater than 0");
+    function depositCollateral(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be > 0");
+        require(collateralToken.transferFrom(msg.sender, address(this), amount), "Transfer failed");
         
-        // Transferir tokens de colateral del usuario al contrato
-        require(
-            collateralToken.transferFrom(msg.sender, address(this), amount),
-            "Transfer failed"
-        );
-        
-        // Actualizar el balance del usuario
         UserData storage user = users[msg.sender];
         user.collateralBalance += amount;
-        user.lastInteractionBlock = block.number;
+        user.lastInteractionTime = block.timestamp;
         
         emit CollateralDeposited(msg.sender, amount);
     }
     
-    // Función para pedir prestado
-    function borrow(uint256 amount) external {
+    function borrow(uint256 amount) external nonReentrant {
         UserData storage user = users[msg.sender];
+        uint256 maxBorrow = (user.collateralBalance * 100) / COLLATERAL_RATIO;
         
-        // Calcular el máximo que puede pedir prestado (66% del colateral)
-        uint256 maxBorrow = (user.collateralBalance * MAX_LOAN_TO_VALUE) / 100;
-        require(amount <= maxBorrow, "Exceeds maximum borrow amount");
+        require(amount > 0, "Amount must be > 0");
+        require(amount <= maxBorrow, "Exceeds max borrow amount");
+        require(user.loanBalance == 0, "Existing loan must be repaid");
+        require(loanToken.balanceOf(address(this)) >= amount, "Insufficient protocol funds");
         
-        // Asegurarse de que no hay deuda existente
-        require(user.loanBalance == 0, "Existing loan must be repaid first");
-        
-        // Actualizar el balance del usuario
         user.loanBalance = amount;
-        user.lastInteractionBlock = block.number;
-        
-        // Transferir tokens de préstamo al usuario
-        loanToken.transfer(msg.sender, amount);
+        user.lastInteractionTime = block.timestamp;
+        require(loanToken.transfer(msg.sender, amount), "Transfer failed");
         
         emit LoanTaken(msg.sender, amount);
     }
     
-    // Función para pagar el préstamo con interés
-    function repay() external {
+    function repay() external nonReentrant {
         UserData storage user = users[msg.sender];
         require(user.loanBalance > 0, "No active loan");
         
-        // Calcular interés (simplificado: 5% del monto prestado por "semana" simulada)
-        uint256 interest = (user.loanBalance * INTEREST_RATE) / 100;
+        uint256 interest = calculateCurrentInterest(msg.sender);
         uint256 totalToRepay = user.loanBalance + interest;
         
-        // Transferir tokens de préstamo de vuelta al contrato
-        require(
-            loanToken.transferFrom(msg.sender, address(this), totalToRepay),
-            "Transfer failed"
-        );
+        require(loanToken.transferFrom(msg.sender, address(this), totalToRepay), "Transfer failed");
         
-        // Actualizar el balance del usuario
         user.interestAccrued += interest;
         user.loanBalance = 0;
-        user.lastInteractionBlock = block.number;
+        user.lastInteractionTime = block.timestamp;
         
         emit LoanRepaid(msg.sender, totalToRepay);
     }
     
-    // Función para retirar colateral
-    function withdrawCollateral() external {
+    function withdrawCollateral() external nonReentrant {
         UserData storage user = users[msg.sender];
         require(user.loanBalance == 0, "Active loan exists");
-        require(user.collateralBalance > 0, "No collateral to withdraw");
+        require(user.collateralBalance > 0, "No collateral");
         
         uint256 amount = user.collateralBalance;
         user.collateralBalance = 0;
-        
-        // Transferir tokens de colateral de vuelta al usuario
-        collateralToken.transfer(msg.sender, amount);
+        require(collateralToken.transfer(msg.sender, amount), "Transfer failed");
         
         emit CollateralWithdrawn(msg.sender, amount);
     }
     
-    // Función para obtener datos del usuario
-    function getUserData(address user) external view returns (
-        uint256 collateralBalance,
-        uint256 loanBalance,
-        uint256 interestAccrued
-    ) {
-        UserData storage userData = users[user];
-        return (
-            userData.collateralBalance,
-            userData.loanBalance,
-            userData.interestAccrued
-        );
-    }
-    
-    // Función auxiliar para calcular el interés acumulado (para pruebas)
-    function calculateAccruedInterest(address user) external view returns (uint256) {
+    function calculateCurrentInterest(address user) public view returns (uint256) {
         UserData storage userData = users[user];
         if (userData.loanBalance == 0) return 0;
         
-        // En un contrato real, usaríamos timestamps, pero para pruebas usamos bloques
-        uint256 blocksSinceLastInteraction = block.number - userData.lastInteractionBlock;
+        uint256 timeElapsed = block.timestamp - userData.lastInteractionTime;
+        uint256 periods = timeElapsed / INTEREST_PERIOD;
         
-        // Simulamos que cada 100 bloques es una "semana" para pruebas
-        uint256 simulatedWeeks = blocksSinceLastInteraction / 100;
+        if (periods == 0) return 0;
         
-        // Calcular interés compuesto (aunque el enunciado pide sin composición)
-        uint256 interest = 0;
-        uint256 currentDebt = userData.loanBalance;
-        
-        for (uint i = 0; i < simulatedWeeks; i++) {
-            interest += (currentDebt * INTEREST_RATE) / 100;
-            currentDebt += (currentDebt * INTEREST_RATE) / 100;
-        }
-        
+        uint256 interest = (userData.loanBalance * INTEREST_RATE * periods) / 100;
         return interest;
+    }
+    
+    function getUserData(address user) external view returns (
+        uint256 collateralBalance,
+        uint256 loanBalance,
+        uint256 interestAccrued,
+        uint256 currentInterest
+    ) {
+        UserData storage userData = users[user];
+        currentInterest = calculateCurrentInterest(user);
+        
+        return (
+            userData.collateralBalance,
+            userData.loanBalance,
+            userData.interestAccrued,
+            currentInterest
+        );
     }
 }

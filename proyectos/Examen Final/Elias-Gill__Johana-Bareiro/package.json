@@ -9,7 +9,7 @@
         "coverage": "hardhat coverage"
     },
     "dependencies": {
-        "@openzeppelin/contracts": "^4.9.3",
+        "@openzeppelin/contracts": "^5.3.0",
         "cors": "^2.8.5",
         "ethers": "^6.1.0",
         "express": "^5.1.0",

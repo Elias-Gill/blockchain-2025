@@ -1,12 +1,11 @@
 require("@nomicfoundation/hardhat-toolbox");
-
-require("dotenv").config(); // <== Agregá esta línea arriba de todo
+require("dotenv").config();
 
 module.exports = {
   solidity: "0.8.20",
   networks: {
     ephemery: {
-      url: process.env.VITE_EPHEMERY_TESTNET,
+      url: process.env.VITE_RPC_URL,
       accounts: [process.env.PRIVATE_KEY],
     },
   },

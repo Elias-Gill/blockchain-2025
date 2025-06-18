@@ -1,137 +1,89 @@
 require("dotenv").config();
+const fs = require("fs");
+const { ethers } = require("hardhat");
 
 async function main() {
-  // Deployment Setup
   const [deployer] = await ethers.getSigners();
-  console.log("Deploying contracts with account:", deployer.address);
-  
-  // Obtener balance de forma compatible con todas las versiones
-  let balance;
-  try {
-    // Intenta con la forma moderna (ethers v6)
-    balance = await ethers.provider.getBalance(deployer.address);
-    console.log("Account balance:", ethers.formatEther(balance), "ETH");
-  } catch (e) {
-    // Fallback para versiones antiguas (ethers v5)
-    balance = await deployer.getBalance();
-    console.log("Account balance:", ethers.utils.formatEther(balance), "ETH");
-  }
+  console.log("Deploying with account:", deployer.address);
+  console.log("Balance:", ethers.formatEther(await ethers.provider.getBalance(deployer.address)), "ETH");
 
-  // Deployment Sequence
-  console.log("\nStep 1: Deploying Collateral Token (cUSD)...");
+  // 1. Desplegar tokens
+  console.log("\nDeploying CollateralToken...");
   const CollateralToken = await ethers.getContractFactory("CollateralToken");
   const collateralToken = await CollateralToken.deploy();
-  
-  // Espera la implementación de forma compatible
-  try {
-    await collateralToken.deployed(); // Para ethers v5
-  } catch (e) {
-    await collateralToken.waitForDeployment(); // Para ethers v6
-  }
-  console.log("CollateralToken deployed to:", await getContractAddress(collateralToken));
+  await collateralToken.waitForDeployment();
+  const collateralTokenAddress = await collateralToken.getAddress();
+  console.log("CollateralToken deployed to:", collateralTokenAddress);
 
-  console.log("\nStep 2: Deploying Loan Token (dDAI)...");
+  console.log("\nDeploying LoanToken...");
   const LoanToken = await ethers.getContractFactory("LoanToken");
   const loanToken = await LoanToken.deploy();
-  try {
-    await loanToken.deployed();
-  } catch (e) {
-    await loanToken.waitForDeployment();
-  }
-  console.log("LoanToken deployed to:", await getContractAddress(loanToken));
+  await loanToken.waitForDeployment();
+  const loanTokenAddress = await loanToken.getAddress();
+  console.log("LoanToken deployed to:", loanTokenAddress);
 
-  console.log("\nStep 3: Deploying Lending Protocol...");
+  // 2. Mintear tokens iniciales
+  console.log("\nMinting initial tokens...");
+  const initialSupply = ethers.parseEther("1000000");
+  
+  await (await collateralToken.mint(deployer.address, initialSupply)).wait();
+  console.log(`Minted ${ethers.formatEther(initialSupply)} cUSD to deployer`);
+
+  // 3. Desplegar protocolo
+  console.log("\nDeploying LendingProtocol...");
   const LendingProtocol = await ethers.getContractFactory("LendingProtocol");
   const lendingProtocol = await LendingProtocol.deploy(
-    await getContractAddress(collateralToken),
-    await getContractAddress(loanToken)
+    collateralTokenAddress,
+    loanTokenAddress
   );
-  try {
-    await lendingProtocol.deployed();
-  } catch (e) {
-    await lendingProtocol.waitForDeployment();
-  }
-  console.log("LendingProtocol deployed to:", await getContractAddress(lendingProtocol));
+  await lendingProtocol.waitForDeployment();
+  const lendingProtocolAddress = await lendingProtocol.getAddress();
+  console.log("LendingProtocol deployed to:", lendingProtocolAddress);
 
-  // Post-Deployment Configuration
-  console.log("\nStep 4: Configuring token permissions...");
-  console.log("Transferring LoanToken ownership to LendingProtocol...");
-  const transferTx = await loanToken.transferOwnership(await getContractAddress(lendingProtocol));
-  await transferTx.wait();
-  console.log("Ownership transferred successfully");
+  // 4. Configurar protocolo
+  console.log("\nConfiguring protocol...");
+  await (await loanToken.mint(lendingProtocolAddress, initialSupply)).wait();
+  console.log(`Minted ${ethers.formatEther(initialSupply)} dDAI to protocol`);
 
-  // Initial Token Distribution (for testing)
+  // 5. Transferir ownership (opcional)
+  console.log("\nTransferring token ownership to protocol...");
+  await (await collateralToken.transferOwnership(lendingProtocolAddress)).wait();
+  await (await loanToken.transferOwnership(lendingProtocolAddress)).wait();
+  console.log("Ownership transferred");
+
+  // 6. Mintear tokens de prueba
   if (process.env.ENABLE_TEST_TOKENS === "true") {
-    console.log("\nStep 5: Minting test tokens...");
-    const testAccounts = await ethers.getSigners();
-    
-    // Skip first account (deployer)
-    for (let i = 1; i < Math.min(testAccounts.length, 5); i++) {
-      const account = testAccounts[i];
-      const amount = parseEther("1000");
-      
-      console.log(`Minting 1000 cUSD to ${account.address}`);
-      const mintTx = await collateralToken.mint(account.address, amount);
-      await mintTx.wait();
-      
-      // Verify balance
-      const balance = await collateralToken.balanceOf(account.address);
-      console.log(`New balance: ${formatEther(balance)} cUSD`);
+    console.log("\nMinting test tokens...");
+    const accounts = await ethers.getSigners();
+    const testAmount = ethers.parseEther("1000");
+
+    for (let i = 1; i < Math.min(accounts.length, 5); i++) {
+      await collateralToken.mint(accounts[i].address, testAmount);
+      const balance = await collateralToken.balanceOf(accounts[i].address);
+      console.log(`Minted to ${accounts[i].address}: ${ethers.formatEther(balance)} cUSD`);
     }
   }
 
-  // Verification Summary
-  console.log("\nDeployment Summary:");
-  console.log("----------------------------------");
-  console.log("Collateral Token (cUSD):", await getContractAddress(collateralToken));
-  console.log("Loan Token (dDAI):     ", await getContractAddress(loanToken));
-  console.log("Lending Protocol:      ", await getContractAddress(lendingProtocol));
-  console.log("----------------------------------");
-
-  // Save deployment addresses to a file (optional)
+  // 7. Guardar direcciones
   if (process.env.SAVE_DEPLOYMENT === "true") {
-    const fs = require('fs');
     const deploymentInfo = {
       network: (await ethers.provider.getNetwork()).name,
-      timestamp: new Date().toISOString(),
       contracts: {
-        CollateralToken: await getContractAddress(collateralToken),
-        LoanToken: await getContractAddress(loanToken),
-        LendingProtocol: await getContractAddress(lendingProtocol)
-      }
+        CollateralToken: collateralTokenAddress,
+        LoanToken: loanTokenAddress,
+        LendingProtocol: lendingProtocolAddress,
+      },
+      timestamp: new Date().toISOString(),
     };
-    fs.writeFileSync('deployment-info.json', JSON.stringify(deploymentInfo, null, 2));
+
+    fs.writeFileSync("deployment-info.json", JSON.stringify(deploymentInfo, null, 2));
     console.log("\nDeployment info saved to deployment-info.json");
   }
-}
 
-// Función auxiliar para manejar diferentes versiones de ethers
-async function getContractAddress(contract) {
-  try {
-    return await contract.getAddress(); // ethers v6
-  } catch (e) {
-    return contract.address; // ethers v5
-  }
-}
-
-// Funciones de conversión compatibles
-function parseEther(amount) {
-  try {
-    return ethers.parseEther(amount); // ethers v6
-  } catch (e) {
-    return ethers.utils.parseEther(amount); // ethers v5
-  }
-}
-
-function formatEther(amount) {
-  try {
-    return ethers.formatEther(amount); // ethers v6
-  } catch (e) {
-    return ethers.utils.formatEther(amount); // ethers v5
-  }
+  console.log("\n✅ Deployment completed successfully!");
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error("\n❌ Deployment failed:", error);
   process.exitCode = 1;
 });

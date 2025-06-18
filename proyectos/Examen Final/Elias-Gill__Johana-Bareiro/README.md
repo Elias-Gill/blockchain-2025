@@ -72,3 +72,10 @@ Para cualquier problema durante la ejecución, verificar:
 - Que las variables de entorno estén correctamente configuradas
 - Que la wallet tenga fondos de prueba
 - Que la dirección del contrato sea correcta si se hizo redeploy
+
+# Configuracion de Holesky testnet
+
+Simplemente con ir a la pagina principal y darle a anadir red:
+https://hoodi.ethpandaops.io/ 
+
+`Faucet:` https://hoodi-faucet.pk910.de/ (NOTA: dejar minimo un minuto y medio corriendo)
