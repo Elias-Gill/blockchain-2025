@@ -15,17 +15,17 @@
 ```bash
 mv env_example .env
 cp .env web_app/
-
-Luego de ello se debe añadir la red testnet para las pruebas con la billetera en metamask:
-```txt
-Nombre de red: "ephemery-testnet"
-URL de red: "https://otter.bordel.wtf/erigon"
-Identificador de cadena: 39438146
-Simbolo de moneda: "ETH"
-Direccion de explorador: "https://explorer.ephemery.dev"
 ```
 
-### Opciones de ejecución
+### Configuracion de Holesky testnet
+
+Simplemente con ir a la pagina principal y darle a anadir red:
+https://hoodi.ethpandaops.io/ 
+
+`Faucet:` https://hoodi-faucet.pk910.de/ (NOTA:
+dejar minimo un minuto y medio corriendo)
+
+## Ejecución
 
 #### Usar contrato existente (recomendado):
 
@@ -43,39 +43,50 @@ Primeramente ejecutar el script
 sh deploy.sh
 ```
 
-Este nos dara el nombre del nuevo contrato, copiarlo y modificar nuestro `.env`:
-
-```bash
-VITE_CONTRACT_ADDRESS=contract_address
-```
-
-### Cargar NFTs personalizados
-
-Si se quiere contar con NFTs personalizados, se puede modificar la variable `IPFS_CODE` para
-modificar el codigo del storage de nuestros NFTs.
-
-## Estructura del proyecto
-- contracts/:
-  Contratos inteligentes
-- scripts/:
-  Script de despliegue `deploy.sh`
-- web_app/:
-  Aplicación frontend React
+Los addresses de los contratos son actualizados automáticamente, asi que simplemente puede
+correr el run.sh de nuevo.
 
 ## Notas importantes
 1. El contrato viene pre-desplegado con los respectivos mints para facilitar las pruebas
-2. Al desplegar nuevo contrato, se mintean automáticamente 10 NFTs
 3. Se requiere fondos de prueba en la wallet para transacciones
 4. El frontend se actualiza automáticamente al hacer cambios
 
 Para cualquier problema durante la ejecución, verificar:
 - Que las variables de entorno estén correctamente configuradas
 - Que la wallet tenga fondos de prueba
-- Que la dirección del contrato sea correcta si se hizo redeploy
 
-# Configuracion de Holesky testnet
+# Estructura del Proyecto
 
-Simplemente con ir a la pagina principal y darle a anadir red:
-https://hoodi.ethpandaops.io/ 
+```
+.
+├── contracts
+│   ├── CollateralToken.sol      # Token colateral usado por el protocolo
+│   ├── ERC20Mock.sol            # Token ERC20 de prueba para tests y cobertura
+│   ├── EvilToken.sol            # Token malicioso de prueba para casos negativos
+│   ├── Interfaces.sol           # Interfaces ILoanToken y ICollateralToken
+│   ├── LendingProtocol.sol      # Contrato principal del protocolo de préstamos
+│   └── LoanToken.sol            # Token del préstamo, emitido por el protocolo
+├── test
+│   └── LendingProtocol.test.js  # Tests principales, incluyendo coverage extra
+├── scripts
+│   └── deploy.js                # Script de despliegue de contratos
+├── coverage/                    # Reportes de cobertura de Hardhat
+├── artifacts/                  # Archivos compilados por Hardhat
+├── web_app/                    # Frontend hecho con React y Vite
+├── hardhat.config.js           # Configuración de Hardhat
+├── package.json
+└── README.md
+```
 
-`Faucet:` https://hoodi-faucet.pk910.de/ (NOTA: dejar minimo un minuto y medio corriendo)
+## Notas sobre los contratos auxiliares
+
+Los contratos `ERC20Mock.sol` y `EvilToken.sol` **no forman parte del protocolo funcional**,
+pero son **estrictamente necesarios para lograr una cobertura completa de ramas y funciones**.
+Esto se debe a que ciertas ramas lógicas en `LendingProtocol.sol` y otros contratos **no pueden
+ser accedidas directamente sin simular tokens con comportamientos específicos**, como:
+
+* Un token que **falla al hacer `transfer` o `transferFrom`** (`EvilToken.sol`)
+* Un token mintable de forma controlada (`ERC20Mock.sol`)
+
+Estos contratos permiten testear rutas de error y edge cases que, de otro modo, quedarían sin
+ejecutar y disminuirían el coverage global.
