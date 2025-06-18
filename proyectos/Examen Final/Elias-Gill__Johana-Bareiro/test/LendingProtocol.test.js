@@ -1103,4 +1103,246 @@ describe("LendingProtocol", function () {
       } catch {}
     });
   });
+
+  describe("LendingProtocol - branch coverage", function () {
+    let owner, user, other;
+    let collateralToken, loanToken, protocol;
+
+    beforeEach(async function () {
+      [owner, user, other] = await ethers.getSigners();
+
+      const ERC20Mock = await ethers.getContractFactory("ERC20Mock");
+      collateralToken = await ERC20Mock.deploy("Collateral", "COLL", 18);
+      loanToken = await ERC20Mock.deploy("Loan", "LOAN", 18);
+
+      await collateralToken.mint(user.address, ethers.parseEther("1000"));
+      await loanToken.mint(owner.address, ethers.parseEther("1000"));
+
+      const LendingProtocol = await ethers.getContractFactory(
+        "LendingProtocol"
+      );
+      protocol = await LendingProtocol.deploy(
+        collateralToken.target,
+        loanToken.target
+      );
+
+      // Fund the protocol with loan tokens
+      await loanToken
+        .connect(owner)
+        .transfer(protocol.target, ethers.parseEther("500"));
+    });
+
+    it("should revert constructor with zero addresses", async function () {
+      const LendingProtocol = await ethers.getContractFactory(
+        "LendingProtocol"
+      );
+      await expect(LendingProtocol.deploy(ethers.ZeroAddress, loanToken.target))
+        .to.be.reverted;
+
+      await expect(
+        LendingProtocol.deploy(collateralToken.target, ethers.ZeroAddress)
+      ).to.be.reverted;
+    });
+
+    it("should revert if depositCollateral called with 0", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("100"));
+      await expect(protocol.connect(user).depositCollateral(0)).to.be.reverted;
+    });
+
+    it("should revert if transferFrom fails during deposit", async function () {
+      const LendingProtocol = await ethers.getContractFactory(
+        "LendingProtocol"
+      );
+      const evilToken = await ethers.getContractFactory("EvilToken");
+      const fake = await evilToken.deploy();
+      const protocol2 = await LendingProtocol.deploy(
+        fake.target,
+        loanToken.target
+      );
+      await expect(protocol2.connect(user).depositCollateral(1000)).to.be
+        .reverted;
+    });
+
+    it("should revert borrow if amount is zero", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("100"));
+      await protocol.connect(user).depositCollateral(ethers.parseEther("100"));
+      await expect(protocol.connect(user).borrow(0)).to.be.reverted;
+    });
+
+    it("should revert borrow if amount exceeds max borrow", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("100"));
+      await protocol.connect(user).depositCollateral(ethers.parseEther("100"));
+      await expect(protocol.connect(user).borrow(ethers.parseEther("10"))).to
+        .not.be.reverted;
+    });
+
+    it("should revert borrow if already has a loan", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("300"));
+      await protocol.connect(user).depositCollateral(ethers.parseEther("300"));
+      await protocol.connect(user).borrow(ethers.parseEther("100"));
+      await expect(protocol.connect(user).borrow(ethers.parseEther("10"))).to.be
+        .reverted;
+    });
+
+    it("should revert borrow if protocol has insufficient funds", async function () {
+      const ERC20Mock = await ethers.getContractFactory("ERC20Mock");
+      const poorLoanToken = await ERC20Mock.deploy("LoanPoor", "LOANP", 18);
+      const LendingProtocol = await ethers.getContractFactory(
+        "LendingProtocol"
+      );
+      const poorProtocol = await LendingProtocol.deploy(
+        collateralToken.target,
+        poorLoanToken.target
+      );
+
+      await collateralToken
+        .connect(user)
+        .approve(poorProtocol.target, ethers.parseEther("300"));
+      await poorLoanToken.mint(user.address, ethers.parseEther("1000")); // to approve spend
+      await poorLoanToken
+        .connect(user)
+        .approve(poorProtocol.target, ethers.parseEther("1000"));
+
+      await poorProtocol
+        .connect(user)
+        .depositCollateral(ethers.parseEther("300"));
+      await expect(poorProtocol.connect(user).borrow(ethers.parseEther("100")))
+        .to.be.reverted;
+    });
+
+    it("should revert repay if no active loan", async function () {
+      await expect(protocol.connect(user).repay()).to.be.revertedWith(
+        "No active loan"
+      );
+    });
+
+    it("should revert repay if transferFrom fails", async function () {
+      const LendingProtocol = await ethers.getContractFactory(
+        "LendingProtocol"
+      );
+      const evilToken = await (
+        await ethers.getContractFactory("EvilToken")
+      ).deploy();
+      const fakeProtocol = await LendingProtocol.deploy(
+        collateralToken.target,
+        evilToken.target
+      );
+      await collateralToken
+        .connect(user)
+        .approve(fakeProtocol.target, ethers.parseEther("200"));
+      await fakeProtocol
+        .connect(user)
+        .depositCollateral(ethers.parseEther("200"));
+      await expect(fakeProtocol.connect(user).repay()).to.be.reverted;
+    });
+
+    it("should revert withdrawCollateral if loan still active", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("300"));
+      await protocol.connect(user).depositCollateral(ethers.parseEther("300"));
+      await protocol.connect(user).borrow(ethers.parseEther("100"));
+      await expect(
+        protocol.connect(user).withdrawCollateral()
+      ).to.be.revertedWith("Active loan exists");
+    });
+
+    it("should revert withdrawCollateral if no collateral", async function () {
+      await expect(
+        protocol.connect(user).withdrawCollateral()
+      ).to.be.revertedWith("No collateral to withdraw");
+    });
+
+    it("should return 0 interest if loanBalance == 0", async function () {
+      const interest = await protocol.calculateCurrentInterest(user.address);
+      expect(interest).to.equal(0);
+    });
+
+    it("should return 0 interest if periods == 0", async function () {
+      await collateralToken
+        .connect(user)
+        .approve(protocol.target, ethers.parseEther("300"));
+      await protocol.connect(user).depositCollateral(ethers.parseEther("300"));
+      await protocol.connect(user).borrow(ethers.parseEther("100"));
+      const interest = await protocol.calculateCurrentInterest(user.address);
+      expect(interest).to.equal(0);
+    });
+
+    it("should return max uint if loanBalance == 0 in getCollateralRatio", async function () {
+      const ratio = await protocol.getCollateralRatio(user.address);
+      expect(ratio).to.equal(ethers.MaxUint256);
+    });
+  });
+
+  describe("TokenMocks Coverage", function () {
+    let ERC20Mock, erc20;
+    let EvilToken, evilToken;
+    let owner, user;
+
+    beforeEach(async function () {
+      [owner, user] = await ethers.getSigners();
+
+      // Desplegar ERC20Mock
+      const ERC20MockFactory = await ethers.getContractFactory("ERC20Mock");
+      erc20 = await ERC20MockFactory.deploy("MockToken", "MCK", 18);
+
+      // Desplegar EvilToken
+      const EvilTokenFactory = await ethers.getContractFactory("EvilToken");
+      evilToken = await EvilTokenFactory.deploy();
+    });
+
+    describe("ERC20Mock", function () {
+      it("should mint tokens", async function () {
+        await erc20.mint(owner.address, 1000);
+        const balance = await erc20.balanceOf(owner.address);
+        expect(balance).to.equal(1000);
+      });
+
+      it("should return correct decimals", async function () {
+        const decimals = await erc20.decimals();
+        expect(decimals).to.equal(18);
+      });
+
+      it("should transfer tokens", async function () {
+        await erc20.mint(owner.address, 1000);
+        await erc20.transfer(user.address, 500);
+        const balance = await erc20.balanceOf(user.address);
+        expect(balance).to.equal(500);
+      });
+    });
+
+    describe("EvilToken", function () {
+      it("transferFrom should return false", async function () {
+        const result = await evilToken.transferFrom(
+          owner.address,
+          user.address,
+          100
+        );
+        expect(result).to.equal(false);
+      });
+
+      it("transfer should return false", async function () {
+        const result = await evilToken.transfer(user.address, 100);
+        expect(result).to.equal(false);
+      });
+
+      it("approve should return true", async function () {
+        const result = await evilToken.approve(user.address, 100);
+        expect(result).to.equal(true);
+      });
+
+      it("balanceOf should return 1e18", async function () {
+        const result = await evilToken.balanceOf(owner.address);
+        expect(result).to.equal(ethers.WeiPerEther);
+      });
+    });
+  });
 });
