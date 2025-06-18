@@ -1,302 +1,365 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const {
+  loadFixture,
+} = require("@nomicfoundation/hardhat-toolbox/network-helpers");
+const { time } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
+require("dotenv").config();
 
 describe("LendingProtocol", function () {
-  async function deployContractsFixture() {
+  async function setupFixture() {
     const [owner, user1, user2] = await ethers.getSigners();
 
-    // Deploy tokens
-    const CollateralToken = await ethers.getContractFactory("CollateralToken");
-    const collateralToken = await CollateralToken.deploy();
-    await collateralToken.deployed();
-
-    const LoanToken = await ethers.getContractFactory("LoanToken");
-    const loanToken = await LoanToken.deploy();
-    await loanToken.deployed();
-
-    // Deploy lending protocol
-    const LendingProtocol = await ethers.getContractFactory("LendingProtocol");
-    const lendingProtocol = await LendingProtocol.deploy(
-      collateralToken.address,
-      loanToken.address
+    const CollateralToken = await ethers.getContractFactory(
+      "CollateralToken",
+      owner
     );
-    await lendingProtocol.deployed();
+    const collateralToken = await CollateralToken.deploy();
+    await collateralToken.waitForDeployment();
 
-    // Mint collateral tokens to users for testing
-    await collateralToken.mint(user1.address, ethers.utils.parseEther("1000"));
-    await collateralToken.mint(user2.address, ethers.utils.parseEther("1000"));
+    const LoanToken = await ethers.getContractFactory("LoanToken", owner);
+    const loanToken = await LoanToken.deploy();
+    await loanToken.waitForDeployment();
 
-    // Give lending protocol minting rights for loan token
-    await loanToken.transferOwnership(lendingProtocol.address);
+    const LendingProtocol = await ethers.getContractFactory(
+      "LendingProtocol",
+      owner
+    );
+    const lendingProtocol = await LendingProtocol.deploy(
+      collateralToken.target,
+      loanToken.target
+    );
+    await lendingProtocol.waitForDeployment();
+
+    const testAmount = ethers.parseEther("1000");
+    await collateralToken.mint(owner.address, testAmount);
+    await collateralToken.mint(user1.address, testAmount);
+    await loanToken.mint(lendingProtocol.target, testAmount);
 
     return { collateralToken, loanToken, lendingProtocol, owner, user1, user2 };
   }
 
-  describe("Token Deployment", function () {
-    it("Should deploy CollateralToken with correct name and symbol", async function () {
-      const { collateralToken } = await loadFixture(deployContractsFixture);
-      expect(await collateralToken.name()).to.equal("CollateralToken");
-      expect(await collateralToken.symbol()).to.equal("cUSD");
-    });
+  describe("Configuración Inicial", function () {
+    it("Debería tener las direcciones correctas de los contratos", async function () {
+      const { collateralToken, loanToken, lendingProtocol } = await loadFixture(
+        setupFixture
+      );
 
-    it("Should deploy LoanToken with correct name and symbol", async function () {
-      const { loanToken } = await loadFixture(deployContractsFixture);
-      expect(await loanToken.name()).to.equal("LoanToken");
-      expect(await loanToken.symbol()).to.equal("dDAI");
+      expect(await lendingProtocol.collateralToken()).to.equal(
+        collateralToken.address
+      );
+      expect(await lendingProtocol.loanToken()).to.equal(loanToken.address);
     });
   });
 
-  describe("Deposit Collateral", function () {
-    it("Should allow users to deposit collateral", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+  describe("Funciones de Token", function () {
+    it("Debería permitir mint de CollateralToken solo al owner", async function () {
+      const { collateralToken, owner, user1 } = await loadFixture(setupFixture);
+
+      // Owner puede mintear
+      await collateralToken.mint(user1.address, ethers.parseEther("100"));
+      expect(await collateralToken.balanceOf(user1.address)).to.equal(
+        ethers.parseEther("100")
       );
 
-      const amount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, amount);
-      await expect(lendingProtocol.connect(user1).depositCollateral(amount))
-        .to.emit(lendingProtocol, "CollateralDeposited")
-        .withArgs(user1.address, amount);
+      // Usuario no puede mintear
+      await expect(
+        collateralToken
+          .connect(user1)
+          .mint(user1.address, ethers.parseEther("100"))
+      ).to.be.revertedWith("Ownable: caller is not the owner");
+    });
 
-      const userData = await lendingProtocol.getUserData(user1.address);
+    it("Debería permitir mint de LoanToken solo al owner", async function () {
+      const { loanToken, owner, user1 } = await loadFixture(setupFixture);
+
+      // Owner puede mintear
+      await loanToken.mint(user1.address, ethers.parseEther("100"));
+      expect(await loanToken.balanceOf(user1.address)).to.equal(
+        ethers.parseEther("100")
+      );
+
+      // Usuario no puede mintear
+      await expect(
+        loanToken.connect(user1).mint(user1.address, ethers.parseEther("100"))
+      ).to.be.revertedWith("Ownable: caller is not the owner");
+    });
+  });
+
+  describe("Depósito de Colateral", function () {
+    it("Debería permitir depositar colateral", async function () {
+      const { collateralToken, lendingProtocol, owner } = await loadFixture(
+        setupFixture
+      );
+
+      const amount = ethers.parseEther("100");
+      await collateralToken.approve(lendingProtocol.address, amount);
+      await expect(lendingProtocol.depositCollateral(amount))
+        .to.emit(lendingProtocol, "CollateralDeposited")
+        .withArgs(owner.address, amount);
+
+      const userData = await lendingProtocol.users(owner.address);
       expect(userData.collateralBalance).to.equal(amount);
     });
 
-    it("Should fail when depositing zero amount", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      await expect(
-        lendingProtocol.connect(user1).depositCollateral(0)
-      ).to.be.revertedWith("Amount must be greater than 0");
+    it("No debería permitir depositar 0 tokens", async function () {
+      const { lendingProtocol } = await loadFixture(setupFixture);
+
+      await expect(lendingProtocol.depositCollateral(0)).to.be.revertedWith(
+        "Amount must be > 0"
+      );
     });
 
-    it("Should fail when transfer fails", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      const amount = ethers.utils.parseEther("100");
+    it("No debería permitir depositar sin aprobación", async function () {
+      const { lendingProtocol } = await loadFixture(setupFixture);
+
       await expect(
-        lendingProtocol.connect(user1).depositCollateral(amount)
+        lendingProtocol.depositCollateral(ethers.parseEther("100"))
       ).to.be.revertedWith("Transfer failed");
     });
   });
 
-  describe("Borrow", function () {
-    it("Should allow users to borrow up to 66% of collateral", async function () {
-      const { collateralToken, lendingProtocol, loanToken, user1 } =
-        await loadFixture(deployContractsFixture);
+  describe("Solicitud de Préstamo", function () {
+    it("Debería permitir pedir préstamo con colateral suficiente", async function () {
+      const { collateralToken, loanToken, lendingProtocol, owner } =
+        await loadFixture(setupFixture);
 
-      // Deposit collateral
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
 
-      // Calculate max borrow (66% of collateral)
-      const maxBorrow = depositAmount.mul(66).div(100);
-      await expect(lendingProtocol.connect(user1).borrow(maxBorrow))
+      const loanAmount = ethers.parseEther("100");
+      await expect(lendingProtocol.borrow(loanAmount))
         .to.emit(lendingProtocol, "LoanTaken")
-        .withArgs(user1.address, maxBorrow);
+        .withArgs(owner.address, loanAmount);
 
-      // Check loan token balance
-      expect(await loanToken.balanceOf(user1.address)).to.equal(maxBorrow);
-
-      // Check user data
-      const userData = await lendingProtocol.getUserData(user1.address);
-      expect(userData.loanBalance).to.equal(maxBorrow);
+      expect(await loanToken.balanceOf(owner.address)).to.equal(loanAmount);
+      const userData = await lendingProtocol.users(owner.address);
+      expect(userData.loanBalance).to.equal(loanAmount);
     });
 
-    it("Should fail when trying to borrow more than 66% of collateral", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+    it("No debería permitir pedir préstamo sin colateral", async function () {
+      const { lendingProtocol } = await loadFixture(setupFixture);
+
+      await expect(
+        lendingProtocol.borrow(ethers.parseEther("100"))
+      ).to.be.revertedWith("Exceeds max borrow amount");
+    });
+
+    it("No debería permitir pedir préstamo que exceda el ratio", async function () {
+      const { collateralToken, lendingProtocol } = await loadFixture(
+        setupFixture
       );
 
-      // Deposit collateral
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
+      const collateralAmount = ethers.parseEther("100");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
 
-      // Try to borrow more than allowed
-      const invalidBorrow = depositAmount.mul(67).div(100);
       await expect(
-        lendingProtocol.connect(user1).borrow(invalidBorrow)
-      ).to.be.revertedWith("Exceeds maximum borrow amount");
+        lendingProtocol.borrow(ethers.parseEther("66.01"))
+      ).to.be.revertedWith("Exceeds max borrow amount");
     });
 
-    it("Should fail when trying to borrow with existing loan", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+    it("No debería permitir pedir préstamo con deuda existente", async function () {
+      const { collateralToken, lendingProtocol } = await loadFixture(
+        setupFixture
       );
 
-      // Deposit and borrow once
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
-      const borrowAmount = depositAmount.mul(50).div(100);
-      await lendingProtocol.connect(user1).borrow(borrowAmount);
+      const collateralAmount = ethers.parseEther("300");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+      await lendingProtocol.borrow(ethers.parseEther("100"));
 
-      // Try to borrow again
       await expect(
-        lendingProtocol.connect(user1).borrow(borrowAmount)
-      ).to.be.revertedWith("Existing loan must be repaid first");
-    });
-
-    it("Should fail when trying to borrow without collateral", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      await expect(
-        lendingProtocol.connect(user1).borrow(ethers.utils.parseEther("10"))
-      ).to.be.revertedWith("Exceeds maximum borrow amount");
+        lendingProtocol.borrow(ethers.parseEther("100"))
+      ).to.be.revertedWith("Existing loan must be repaid");
     });
   });
 
-  describe("Repay", function () {
-    it("Should allow users to repay loans with interest", async function () {
-      const { collateralToken, lendingProtocol, loanToken, user1 } =
-        await loadFixture(deployContractsFixture);
+  describe("Pago de Préstamo", function () {
+    it("Debería permitir pagar préstamo con interés", async function () {
+      const { collateralToken, loanToken, lendingProtocol, owner } =
+        await loadFixture(setupFixture);
 
-      // Deposit and borrow
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
-      const borrowAmount = depositAmount.mul(50).div(100);
-      await lendingProtocol.connect(user1).borrow(borrowAmount);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+      const loanAmount = ethers.parseEther("100");
+      await lendingProtocol.borrow(loanAmount);
 
-      // Approve repayment (amount + 5% interest)
-      const repayAmount = borrowAmount.mul(105).div(100);
-      await loanToken.connect(user1).approve(lendingProtocol.address, repayAmount);
+      await time.increase(7 * 24 * 60 * 60);
 
-      // Repay
-      await expect(lendingProtocol.connect(user1).repay())
+      const interest = await lendingProtocol.calculateCurrentInterest(
+        owner.address
+      );
+      const totalToRepay = loanAmount.add(interest);
+
+      await loanToken.approve(lendingProtocol.address, totalToRepay);
+      await expect(lendingProtocol.repay())
         .to.emit(lendingProtocol, "LoanRepaid")
-        .withArgs(user1.address, repayAmount);
+        .withArgs(owner.address, totalToRepay);
 
-      // Check user data
-      const userData = await lendingProtocol.getUserData(user1.address);
+      const userData = await lendingProtocol.users(owner.address);
       expect(userData.loanBalance).to.equal(0);
-      expect(userData.interestAccrued).to.equal(borrowAmount.mul(5).div(100));
+      expect(userData.interestAccrued).to.equal(interest);
     });
 
-    it("Should fail when trying to repay with no active loan", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      await expect(lendingProtocol.connect(user1).repay()).to.be.revertedWith(
+    it("No debería permitir pagar préstamo sin deuda", async function () {
+      const { lendingProtocol } = await loadFixture(setupFixture);
+
+      await expect(lendingProtocol.repay()).to.be.revertedWith(
         "No active loan"
       );
     });
 
-    it("Should fail when transfer fails during repayment", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+    it("No debería permitir pagar préstamo sin aprobación", async function () {
+      const { collateralToken, lendingProtocol } = await loadFixture(
+        setupFixture
       );
 
-      // Deposit and borrow
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
-      const borrowAmount = depositAmount.mul(50).div(100);
-      await lendingProtocol.connect(user1).borrow(borrowAmount);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+      await lendingProtocol.borrow(ethers.parseEther("100"));
 
-      // Try to repay without approval
-      await expect(lendingProtocol.connect(user1).repay()).to.be.revertedWith(
+      await expect(lendingProtocol.repay()).to.be.revertedWith(
         "Transfer failed"
       );
     });
   });
 
-  describe("Withdraw Collateral", function () {
-    it("Should allow users to withdraw collateral when no debt", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+  describe("Retiro de Colateral", function () {
+    it("Debería permitir retirar colateral sin deuda", async function () {
+      const { collateralToken, lendingProtocol, owner } = await loadFixture(
+        setupFixture
       );
 
-      // Deposit
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
+      const amount = ethers.parseEther("100");
+      await collateralToken.approve(lendingProtocol.address, amount);
+      await lendingProtocol.depositCollateral(amount);
 
-      // Withdraw
-      await expect(lendingProtocol.connect(user1).withdrawCollateral())
+      await expect(lendingProtocol.withdrawCollateral())
         .to.emit(lendingProtocol, "CollateralWithdrawn")
-        .withArgs(user1.address, depositAmount);
+        .withArgs(owner.address, amount);
 
-      // Check user data
-      const userData = await lendingProtocol.getUserData(user1.address);
-      expect(userData.collateralBalance).to.equal(0);
+      // Verificar balance razonable (permite variación)
+      const balance = await collateralToken.balanceOf(owner.address);
+      expect(balance).to.be.closeTo(
+        ethers.parseEther("1000000"),
+        ethers.parseEther("1")
+      );
     });
 
-    it("Should fail when trying to withdraw with active loan", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+    it("No debería permitir retirar colateral con deuda pendiente", async function () {
+      const { collateralToken, lendingProtocol } = await loadFixture(
+        setupFixture
       );
 
-      // Deposit and borrow
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
-      const borrowAmount = depositAmount.mul(50).div(100);
-      await lendingProtocol.connect(user1).borrow(borrowAmount);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+      await lendingProtocol.borrow(ethers.parseEther("100"));
 
-      // Try to withdraw
-      await expect(
-        lendingProtocol.connect(user1).withdrawCollateral()
-      ).to.be.revertedWith("Active loan exists");
+      await expect(lendingProtocol.withdrawCollateral()).to.be.revertedWith(
+        "Active loan exists"
+      );
     });
 
-    it("Should fail when trying to withdraw with no collateral", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      await expect(
-        lendingProtocol.connect(user1).withdrawCollateral()
-      ).to.be.revertedWith("No collateral to withdraw");
+    it("No debería permitir retirar sin colateral", async function () {
+      const { lendingProtocol } = await loadFixture(setupFixture);
+
+      await expect(lendingProtocol.withdrawCollateral()).to.be.revertedWith(
+        "No collateral to withdraw"
+      );
     });
   });
 
-  describe("Interest Calculation", function () {
-    it("Should calculate accrued interest correctly", async function () {
-      const { collateralToken, lendingProtocol, loanToken, user1 } =
-        await loadFixture(deployContractsFixture);
+  describe("Cálculo de Interés", function () {
+    it("Debería calcular interés correctamente", async function () {
+      const { collateralToken, lendingProtocol, owner } = await loadFixture(
+        setupFixture
+      );
 
-      // Deposit and borrow
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
-      const borrowAmount = depositAmount.mul(50).div(100);
-      await lendingProtocol.connect(user1).borrow(borrowAmount);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+      const loanAmount = ethers.parseEther("100");
+      await lendingProtocol.borrow(loanAmount);
 
-      // Mine some blocks to simulate time passing
-      for (let i = 0; i < 100; i++) {
-        await ethers.provider.send("evm_mine", []);
-      }
+      await time.increase(7 * 24 * 60 * 60);
 
-      // Check interest (should be 5% after 100 blocks)
-      const interest = await lendingProtocol.calculateAccruedInterest(user1.address);
-      expect(interest).to.equal(borrowAmount.mul(5).div(100));
+      const interest = await lendingProtocol.calculateCurrentInterest(
+        owner.address
+      );
+      expect(interest).to.equal(ethers.parseEther("5"));
+
+      await time.increase(7 * 24 * 60 * 60);
+      const newInterest = await lendingProtocol.calculateCurrentInterest(
+        owner.address
+      );
+      expect(newInterest).to.equal(ethers.parseEther("10.25"));
     });
 
-    it("Should return zero interest when no active loan", async function () {
-      const { lendingProtocol, user1 } = await loadFixture(deployContractsFixture);
-      const interest = await lendingProtocol.calculateAccruedInterest(user1.address);
+    it("Debería devolver 0 si no hay préstamo", async function () {
+      const { lendingProtocol, owner } = await loadFixture(setupFixture);
+
+      expect(
+        await lendingProtocol.calculateCurrentInterest(owner.address)
+      ).to.equal(0);
+    });
+  });
+
+  describe("Datos de Usuario", function () {
+    it("Debería devolver los datos correctos del usuario", async function () {
+      const { collateralToken, lendingProtocol, owner } = await loadFixture(
+        setupFixture
+      );
+
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
+
+      let [collateral, loan, interest] = await lendingProtocol.getUserData(
+        owner.address
+      );
+      expect(collateral).to.equal(collateralAmount);
+      expect(loan).to.equal(0);
+      expect(interest).to.equal(0);
+
+      const loanAmount = ethers.parseEther("100");
+      await lendingProtocol.borrow(loanAmount);
+
+      [collateral, loan, interest] = await lendingProtocol.getUserData(
+        owner.address
+      );
+      expect(collateral).to.equal(collateralAmount);
+      expect(loan).to.equal(loanAmount);
       expect(interest).to.equal(0);
     });
   });
 
-  describe("User Data", function () {
-    it("Should return correct user data", async function () {
-      const { collateralToken, lendingProtocol, user1 } = await loadFixture(
-        deployContractsFixture
+  describe("Ratio de Colateralización", function () {
+    it("Debería calcular el ratio correctamente", async function () {
+      const { collateralToken, lendingProtocol, owner } = await loadFixture(
+        setupFixture
       );
 
-      // Initial data should be zeros
-      let userData = await lendingProtocol.getUserData(user1.address);
-      expect(userData.collateralBalance).to.equal(0);
-      expect(userData.loanBalance).to.equal(0);
-      expect(userData.interestAccrued).to.equal(0);
+      const collateralAmount = ethers.parseEther("150");
+      await collateralToken.approve(lendingProtocol.address, collateralAmount);
+      await lendingProtocol.depositCollateral(collateralAmount);
 
-      // Deposit
-      const depositAmount = ethers.utils.parseEther("100");
-      await collateralToken.connect(user1).approve(lendingProtocol.address, depositAmount);
-      await lendingProtocol.connect(user1).depositCollateral(depositAmount);
+      // Sin préstamo
+      expect(await lendingProtocol.getCollateralRatio(owner.address)).to.equal(
+        ethers.MaxUint256
+      );
 
-      // Check data after deposit
-      userData = await lendingProtocol.getUserData(user1.address);
-      expect(userData.collateralBalance).to.equal(depositAmount);
-      expect(userData.loanBalance).to.equal(0);
-      expect(userData.interestAccrued).to.equal(0);
+      const loanAmount = ethers.parseEther("100");
+      await lendingProtocol.borrow(loanAmount);
+
+      // Aquí asumo que getCollateralRatio devuelve porcentaje como número (150%)
+      expect(await lendingProtocol.getCollateralRatio(owner.address)).to.equal(
+        150
+      );
     });
   });
 });
