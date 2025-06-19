@@ -1,0 +1,8 @@
+# OBLIGATORIO: la private key de tu billetera
+PRIVATE_KEY=<wallet PK>
+
+VITE_RPC_URL=https://rpc.hoodi.ethpandaops.io
+
+# Cosas de testing
+ENABLE_TEST_TOKENS=true
+SAVE_DEPLOYMENT=true
